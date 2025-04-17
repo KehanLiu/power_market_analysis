@@ -4,11 +4,21 @@ import numpy as np
 import logging
 logging.getLogger('pyomo.core').setLevel(logging.ERROR)
 
-from pyomo.environ import *
+from pyomo.environ import (
+    ConcreteModel, 
+    Set, 
+    Param, 
+    Var, 
+    Constraint, 
+    Objective, 
+    maximize, 
+    SolverFactory, 
+    Any
+)
 from pyutilib.services import register_executable, registered_executable
 register_executable(name='glpsol')
 
-def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_capacity=0, include_revenue=True, solver: str='glpk'):
+def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_capacity=0, max_battery_power=0.25, efficiency=0.9, include_revenue=True, solver: str='glpk'):
     """
     Determine the optimal charge and discharge behavior of a battery.
     Assuming pure foresight of future spot prices over every 
@@ -21,7 +31,9 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
     datetime        : a list of time stamp
     spot_price      : a list of spot price of the corresponding time stamp
     max_battery_capacity : the maximum capacity of the battery
-    initial_capacit : the initial capacity of the battery
+    initial_capacity  : the initial capacity of the battery
+    max_battery_power : the maximum power of the battery
+    efficiency      : the efficiency of the battery
     include_revenue : a boolean indicates if return results should include revenue calculation
     solver          : the name of the desire linear programming solver (eg. 'glpk', 'mosek', 'gurobi')
 
@@ -33,10 +45,9 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
     # Battery's technical specification
     MIN_BATTERY_CAPACITY = 0
     MAX_BATTERY_CAPACITY = max_battery_capacity
-    MAX_BATTERY_POWER = 0.25
-    MAX_RAW_POWER = 1
+    MAX_BATTERY_POWER = max_battery_power
     INITIAL_CAPACITY = initial_capacity # Default initial capacity will assume to be 0
-    EFFICIENCY = 0.9
+    EFFICIENCY = efficiency
     MLF = 1 # Marginal Loss Factor
     
     df = pd.DataFrame({'datetime': datetime, 'spot_price': spot_price}).reset_index(drop=True)
@@ -55,8 +66,8 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
 
     # battery varaibles
     battery.Capacity = Var(battery.Period, bounds=(MIN_BATTERY_CAPACITY, MAX_BATTERY_CAPACITY))
-    battery.Charge_power = Var(battery.Period, bounds=(0, MAX_RAW_POWER))
-    battery.Discharge_power = Var(battery.Period, bounds=(0, MAX_RAW_POWER))
+    battery.Charge_power = Var(battery.Period, bounds=(0, MAX_BATTERY_POWER))
+    battery.Discharge_power = Var(battery.Period, bounds=(0, MAX_BATTERY_POWER))
 
     # Set constraints for the battery
     # Defining the battery objective (function to be maximise)
