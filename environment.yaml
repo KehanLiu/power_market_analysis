@@ -1,0 +1,27 @@
+name: env_power_market_analysis
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scikit-learn
+  - jupyter
+  - notebook
+  - plotly
+  - statsmodels
+  - scipy
+  - openpyxl
+  - xlrd
+  - pyomo
+  - glpk
+  - pip:
+    - pandas-datareader
+    - yfinance
+    - fredapi
+    - requests
+    - poetry 

@@ -13,12 +13,14 @@ from pyomo.environ import (
     Objective, 
     maximize, 
     SolverFactory, 
-    Any
+    Any,
+    Binary,
+    NonNegativeReals
 )
-from pyutilib.services import register_executable, registered_executable
-register_executable(name='glpsol')
 
-def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_capacity=0, max_battery_power=0.25, efficiency=0.9, include_revenue=True, solver: str='glpk'):
+def battery_optimisation(
+        datetime, spot_price, max_battery_capacity=1, initial_capacity=0, end_capacity=0, max_battery_power=0.25, 
+        efficiency=0.9, daily_max_charging_circles=2, include_revenue=True, solver: str='glpk'):
     """
     Determine the optimal charge and discharge behavior of a battery.
     Assuming pure foresight of future spot prices over every 
@@ -32,8 +34,10 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
     spot_price      : a list of spot price of the corresponding time stamp
     max_battery_capacity : the maximum capacity of the battery
     initial_capacity  : the initial capacity of the battery
+    end_capacity      : the end capacity of the battery
     max_battery_power : the maximum power of the battery
     efficiency      : the efficiency of the battery
+    daily_max_charging_circles : the maximum number of charging circles in a day
     include_revenue : a boolean indicates if return results should include revenue calculation
     solver          : the name of the desire linear programming solver (eg. 'glpk', 'mosek', 'gurobi')
 
@@ -47,7 +51,9 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
     MAX_BATTERY_CAPACITY = max_battery_capacity
     MAX_BATTERY_POWER = max_battery_power
     INITIAL_CAPACITY = initial_capacity # Default initial capacity will assume to be 0
+    END_CAPACITY = end_capacity
     EFFICIENCY = efficiency
+    DAILY_MAX_CHARGING_CIRCLES = daily_max_charging_circles
     MLF = 1 # Marginal Loss Factor
     
     df = pd.DataFrame({'datetime': datetime, 'spot_price': spot_price}).reset_index(drop=True)
@@ -57,7 +63,7 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
     
     # Define model and solver
     battery = ConcreteModel()
-    opt = SolverFactory(solver)
+    solver = SolverFactory(solver)
 
     # defining components of the objective model
     # battery parameters
@@ -92,6 +98,24 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
 
         # otherwise skip the current constraint    
         return Constraint.Skip
+    
+    # Make sure the battery does not charge more than the daily max charging circles everyday
+    def daily_charging_limit(battery, i):
+        # Get the datetime for the current period
+        current_date = df.datetime[i].date()
+        # Get all periods for the current date
+        daily_periods = [p for p in battery.Period if df.datetime[p].date() == current_date]
+        # Sum up all charging for the day (each charge power / 4 represents the energy charged in MWh)
+        daily_charging = sum(battery.Charge_power[p] / 4 for p in daily_periods)
+        # Ensure total daily charging doesn't exceed max capacity times daily max circles
+        return daily_charging <= MAX_BATTERY_CAPACITY * DAILY_MAX_CHARGING_CIRCLES
+    
+    # Make sure the battery has the defined end capacity at the end of the optimisation period
+    def end_capacity_constraint(battery, i):
+        # Only apply constraint to the final period
+        if i == battery.Period.last():
+            return battery.Capacity[i] == END_CAPACITY
+        return Constraint.Skip
 
     # Defining capacity rule for the battery
     def capacity_constraint(battery, i):
@@ -108,10 +132,12 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
     battery.over_charge = Constraint(battery.Period, rule=over_charge)
     battery.over_discharge = Constraint(battery.Period, rule=over_discharge)
     battery.negative_discharge = Constraint(battery.Period, rule=negative_discharge)
+    battery.daily_charging_limit = Constraint(battery.Period, rule=daily_charging_limit)
+    battery.end_capacity_constraint = Constraint(battery.Period, rule=end_capacity_constraint)
     battery.objective = Objective(rule=maximise_profit, sense=maximize)
 
     # Maximise the objective
-    opt.solve(battery, tee=False)
+    solver.solve(battery, tee=False)
 
     # unpack results
     charge_power, discharge_power, capacity, spot_price = ([] for i in range(4))
@@ -147,4 +173,83 @@ def battery_optimisation(datetime, spot_price, max_battery_capacity=1, initial_c
                               result.market_dispatch * result.spot_price / MLF,
                               result.market_dispatch * result.spot_price * MLF)
     
+    return result
+
+def optimize_battery_operation_every_week(
+    da_price_data,
+    max_battery_capacity,
+    initial_capacity,
+    end_capacity,
+    max_battery_power,
+    efficiency,
+    daily_max_charging_circles,
+    include_revenue,
+    result_csv_path,
+    solver='glpk'
+):
+    """
+    Optimise the battery operation for every week in the given data
+    """
+    # Convert datetime to datetime64[ns]
+    da_price_data['datetime'] = da_price_data['datetime'].astype('datetime64[ns]')
+    
+    # Group by week
+    da_price_data['year'] = da_price_data['datetime'].dt.year
+    da_price_data['week'] = da_price_data['datetime'].dt.isocalendar().week
+
+    # Optimise for each week for every year
+    for year in da_price_data['year'].unique():
+        year_data = da_price_data[da_price_data['year'] == year]
+        total_yearly_result_df = pd.DataFrame()
+        for week in year_data['week'].unique():
+            week_data = year_data[year_data['week'] == week]
+            result = battery_optimisation(
+                week_data['datetime'], 
+                week_data['da_price'], 
+                max_battery_capacity=max_battery_capacity,
+                initial_capacity=initial_capacity,
+                end_capacity=end_capacity,
+                max_battery_power=max_battery_power,
+                efficiency=efficiency,
+                daily_max_charging_circles=daily_max_charging_circles,
+                include_revenue=include_revenue,    
+                solver=solver
+            )
+            result.to_csv(f'{result_csv_path}/battery_operation_{year}_{week}.csv', index=False)
+            revenue = result['revenue'].sum()
+            print(f'Year: {year}, Week: {week}, Revenue: {revenue}')
+            total_yearly_result_df = pd.concat([total_yearly_result_df, result])
+            print(f'Total revenue for year {year}: {total_yearly_result_df.revenue.sum()}')
+        total_yearly_result_df.to_csv(f'{result_csv_path}/battery_operation_{year}.csv', index=False)
+
+def optimize_battery_operation_every_day(
+    da_price_data_for_single_day,
+    max_battery_capacity,
+    initial_capacity,
+    end_capacity,
+    max_battery_power,
+    efficiency,
+    daily_max_charging_circles,
+    include_revenue,
+    result_csv_path = None,
+    solver='glpk'
+):
+    """
+    Optimise the battery operation for single day
+    """
+    result = battery_optimisation(
+        da_price_data_for_single_day['datetime'], 
+        da_price_data_for_single_day['da_price'], 
+        max_battery_capacity=max_battery_capacity,
+        initial_capacity=initial_capacity,
+        end_capacity=end_capacity,
+        max_battery_power=max_battery_power,
+        efficiency=efficiency,
+        daily_max_charging_circles=daily_max_charging_circles,
+        include_revenue=include_revenue,
+        solver=solver
+    )
+    if result_csv_path:
+        date = da_price_data_for_single_day['datetime'].date()
+        result.to_csv(f'{result_csv_path}/battery_operation_{date}.csv', index=False)
     return result

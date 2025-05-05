@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "power-market-analysis"
+version = "0.1.0"
+description = ""
+authors = ["Kehan Liu <kehan.liu@tennet.eu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pyomo = "^6.9.2"
+pandas = "^2.2.3"
+pyutilib = "^6.0.0"
+requests = "^2.32.3"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
