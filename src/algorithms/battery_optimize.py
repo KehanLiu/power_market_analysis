@@ -235,7 +235,7 @@ def optimize_battery_operation_every_day(
     solver='glpk'
 ):
     """
-    Optimise the battery operation for single day
+    Optimise the battery operation for every single day in the given data
     """
     result = battery_optimisation(
         da_price_data_for_single_day['datetime'], 
@@ -253,3 +253,59 @@ def optimize_battery_operation_every_day(
         date = da_price_data_for_single_day['datetime'].date()
         result.to_csv(f'{result_csv_path}/battery_operation_{date}.csv', index=False)
     return result
+
+def twenty_four_hours_optimization(
+    multi_market_price_data, 
+    max_battery_capacity,
+    initial_capacity,
+    end_capacity,
+    max_battery_power,
+    efficiency,
+    daily_max_charging_circles, 
+    start_hour=0,
+    calculate_daily_revenue=True, 
+    ):
+    """
+    Optimise the battery operation for every 24 hours based on the multi-market price data
+    """
+    # optimize the battery operation for the every 24 hours based on the da price first
+    every_day_da_price = multi_market_price_data.groupby(multi_market_price_data['datetime'].dt.date)
+    result_total = pd.DataFrame()
+    for date, single_day_df in every_day_da_price:
+        result_single_day = optimize_battery_operation_every_day(
+            single_day_df,
+            max_battery_capacity,
+            initial_capacity,
+            end_capacity,
+            max_battery_power,
+            efficiency,
+            daily_max_charging_circles,
+            include_revenue=True
+            )
+        if calculate_daily_revenue:
+            result_single_day['total_daily_revenue'] = result_single_day['revenue'].sum()
+        # Reset index before concatenation
+        result_single_day = result_single_day.reset_index(drop=True)
+        # Concatenate with ignore_index=True
+        result_total = pd.concat([result_total, result_single_day], ignore_index=True)
+    return result_total
+
+def multi_market_optimization(multi_market_price_data, safty_fcr_bid_coefficient):
+    result_total_single_day = twenty_four_hours_optimization(multi_market_price_data)
+    mm_result = multi_market_price_data.merge(result_total_single_day, on='datetime', how='left')
+    # calculate the revenue for each day
+    mm_result['target_fcr_price'] = mm_result['total_daily_revenue'] / 6
+    mm_result['scaled_fcr_price'] = mm_result['target_fcr_price'] * safty_fcr_bid_coefficient
+    mm_result['success_fcr_bid'] = mm_result['scaled_fcr_price'] >= mm_result['GERMANY_SETTLEMENTCAPACITY_PRICE_[EUR/MW]']
+    # if fcr bid failed, do twenty_four_hours_optimization on failed timeslots of that day
+    mm_result_failed = mm_result[mm_result['success_fcr_bid'] == False]
+    result_total_failed_fcr_bid = twenty_four_hours_optimization(mm_result_failed, calculate_daily_revenue=False)
+    # add a real_ prefix to every column of result_total_failed_fcr_bid, except for datetime
+    result_total_failed_fcr_bid.columns = ['datetime' if col == 'datetime' else 'real_' + col 
+                                         for col in result_total_failed_fcr_bid.columns]
+    # merge result_total_failed_fcr_bid and mm_result
+    result_total = mm_result.merge(result_total_failed_fcr_bid, on='datetime', how='left')
+    result_total.loc[result_total.success_fcr_bid == True, 'real_revenue'] = result_total.loc[result_total.success_fcr_bid == True, 'scaled_fcr_price'] / 16
+    # ffill real_opening_capacity
+    result_total['real_opening_capacity'] = result_total['real_opening_capacity'].ffill()
+    return result_total
