@@ -28,3 +28,11 @@ def split_60_mins_data_into_15_mins(data_60: pd.DataFrame) -> pd.DataFrame:
     data_15.reset_index(inplace=True)
 
     return data_15
+
+def check_missing_timestamps(df: pd.DataFrame, frequence: str):
+    """check if there are missing timestamps in the df"""
+    complete_timestamps = pd.date_range(start=df['datetime'].min(), end=df['datetime'].max(), freq=frequence)
+    missing_timestamps = complete_timestamps[~complete_timestamps.isin(df['datetime'])]
+    print(f"Missing timestamps: {missing_timestamps}")
+    return missing_timestamps
+
